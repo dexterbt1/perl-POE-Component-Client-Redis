@@ -7,13 +7,17 @@ our @ISA = qw(Exporter);
 our @EXPORT = qw/
     REDIS_CTYPE_ONELINE    
     REDIS_CTYPE_ERROR
+    REDIS_CTYPE_INTEGER   
     REDIS_CTYPE_BULK
+    REDIS_CTYPE_MULTIBULK
 /;
 
 
 sub REDIS_CTYPE_ONELINE     { '+' }
 sub REDIS_CTYPE_ERROR       { '-' }
+sub REDIS_CTYPE_INTEGER     { ':' }
 sub REDIS_CTYPE_BULK        { '$' }
+sub REDIS_CTYPE_MULTIBULK   { '*' }
 
 
 
@@ -24,7 +28,9 @@ our $CRLF = "\r\n";
 sub new {
     my ($class) = @_;
     my $buffer  = [
-        '', # 0: BUFFER
+        '',         # 0: string;    BUFFER
+        0,          # 1: boolean;   partial multi-bulk mode
+        [ ],        # 2: arrayref;  multi-bulk queue
     ];
     my $self = bless $buffer, $class;
     return $self;
@@ -69,8 +75,9 @@ sub _get_redis_pdus {
         if (length $self->[0] > 0) {
             $ctype = substr($self->[0], 0, 1);
         }
-
+        
         SWITCH: {
+            $incomplete_buffer = 1;
 
             # ONELINEs
             ($ctype eq '+') and do {
@@ -80,7 +87,7 @@ sub _get_redis_pdus {
                     push @out, [
                         REDIS_CTYPE_ONELINE(),
                         $1,                
-                    ];       
+                    ];
                     $i++;
                     $incomplete_buffer = 0;
                     last SWITCH;
@@ -102,35 +109,101 @@ sub _get_redis_pdus {
                 }
             };
 
+            # INTEGER
+            ($ctype eq ':') and do {
+                $incomplete_buffer = 1; # assume it's incomplete unless otherwise
+                if ($self->[0] =~ /^:(\d+?)$CRLF/) {
+                    $self->[0] =~ s/^:(\d+?)$CRLF//;
+                    push @out, [
+                        REDIS_CTYPE_INTEGER(),
+                        $1,                
+                    ];
+                    $i++;
+                    $incomplete_buffer = 0;
+                    last SWITCH;
+                }
+            };
+
             # BULK
             ($ctype eq '$') and do {
                 $incomplete_buffer = 1;
+
                 if ($self->[0] =~ /^\$(\-{0,1}\d+?)$CRLF/) {
                     my $bytes = int($1);
+                    my $bulk_value = undef;
                     if ($bytes < 0) {
                         $self->[0] =~ s/^\$(\-{0,1}\d+?)$CRLF//;
-                        push @out, [
-                            REDIS_CTYPE_BULK(),
-                            undef,
-                        ];       
-                        $i++;
-                        $incomplete_buffer = 0;
+                        if ($self->[1] > 0) {
+                            # this is part of the multi bulk operation
+                            $self->[1]--; 
+                            push @{$self->[2]}, undef;
+                            $incomplete_buffer = 0;
+                        }
+                        else {
+                            push @out, [
+                                REDIS_CTYPE_BULK(),
+                                $bulk_value,
+                            ];       
+                            $i++;
+                            $incomplete_buffer = 0;
+                            last SWITCH;
+                        }
                     }
                     # bulk data is not undefined
+                    # TODO: this could later be optimized to use less memory thru partial parsing
                     if ($self->[0] =~ /^\$(\d+?)$CRLF(.{$bytes})$CRLF/) {
                         $self->[0] =~ s/^\$(\d+?)$CRLF(.{$bytes})$CRLF//;
-                        push @out, [
-                            REDIS_CTYPE_BULK(),
-                            $2,
-                        ];       
-                        $i++;
-                        $incomplete_buffer = 0;
-                        last SWITCH;
+                        $bulk_value = $2;
+                        if ($self->[1] > 0) {
+                            # this is part of the multi bulk operation
+                            $self->[1]--;
+                            push @{$self->[2]}, $bulk_value;
+                            $incomplete_buffer = 0;
+                        }
+                        else {
+                            push @out, [
+                                REDIS_CTYPE_BULK(),
+                                $bulk_value,
+                            ];
+                            $i++;
+                            $incomplete_buffer = 0;
+                            last SWITCH;
+                        }
                     }
                 }
             };
 
-            $incomplete_buffer = 1;
+            # MULTI-BULK
+            ($ctype eq '*') and do {
+                $incomplete_buffer = 1;
+                if ($self->[0] =~ /^\*(\-{0,1}\d+?)$CRLF/) {
+                    $self->[0] =~ s/^\*(\-{0,1}\d+?)$CRLF//;
+                    $self->[1] = int($1);
+                    $incomplete_buffer = 0;
+                    if ($self->[1] <= 0) {
+                        $self->[1] = 0;
+                        push @out, [
+                            REDIS_CTYPE_MULTIBULK(),
+                            undef,
+                        ];
+                        $i++;
+                    }
+                }
+                last SWITCH;
+            };
+
+            # flush multi-bulk 
+            if ( ($self->[1] == 0) and (scalar @{$self->[2]} > 0) ) {
+                push @out, [
+                    REDIS_CTYPE_MULTIBULK(),
+                    $self->[2],
+                ];
+                $self->[2] = [ ];
+                $i++;
+                $incomplete_buffer = 0;
+                last SWITCH;
+            }
+
         } 
 
         if ( defined($wanted_count) and ($i>=$wanted_count) ) {

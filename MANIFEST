@@ -3,6 +3,10 @@ Changes
 MANIFEST
 README
 lib/POE/Component/Client/Redis.pm
+lib/POE/Filter/Redis.pm
 t/00-load.t
+t/10-filter.t
+t/boilerplate.t
 t/pod-coverage.t
 t/pod.t
+

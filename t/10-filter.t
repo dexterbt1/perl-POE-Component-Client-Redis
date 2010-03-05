@@ -75,6 +75,27 @@ $f->get_one_start(["\$-1$CRLF"]);
 is_deeply $f->get_one, [ [ REDIS_CTYPE_BULK(), undef ] ];
 
 
+# multi-bulk (*)
+# =======================================
+
+$f->get_one_start([join($CRLF, '*4', '$3', 'foo', '$3', 'bar', '$5', 'Hello', '$5', 'World')]);
+is_deeply $f->get, [ ];
+$f->get_one_start([$CRLF]);
+is_deeply $f->get, [ [ REDIS_CTYPE_MULTIBULK(), [ 'foo', 'bar', 'Hello', 'World' ] ] ];
+
+
+$f->get_one_start(['*-1', $CRLF]);
+is_deeply $f->get, [ [ REDIS_CTYPE_MULTIBULK(), undef ] ];
+
+$f->get_one_start([join($CRLF,'*3','$-1','$3','bar','$-1'),$CRLF]);
+is_deeply $f->get, [ [ REDIS_CTYPE_MULTIBULK(), [ undef, 'bar', undef ] ] ];
+
+
+# integer (:)
+# =======================================
+
+$f->get_one_start([':1234', $CRLF]);
+is_deeply $f->get, [ [ REDIS_CTYPE_INTEGER(), 1234 ] ];
 
 
 
