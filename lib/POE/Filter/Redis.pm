@@ -216,6 +216,25 @@ sub _get_redis_pdus {
 
 
 
+sub put {
+    my ($self, $args) = @_;
+    my @out = ();
+    my $parts_count = scalar @$args;
+    if ($parts_count > 0) {
+        foreach my $command (@$args) {
+            if ( defined($command) and (ref($command) eq 'ARRAY') and (scalar(@$command)>0) ) {
+                my @outp = map { '$'.length($_) => $_ } @$command;
+                unshift @outp, '*'.scalar(@$command);
+                push @out, join($CRLF, @outp, '');
+            }
+        }
+    }
+    return \@out;
+}
+
+
+
+
 1;
 
 __END__
@@ -235,6 +254,8 @@ POE::Filter::Redis - implements the Redis client protocol
 =item $obj->get_one()
 
 =item $obj->get()
+
+=item $obj->put()
 
 =back
 
